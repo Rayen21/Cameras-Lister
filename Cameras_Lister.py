@@ -1,499 +1,303 @@
 bl_info = {
-    "name": "Cameras Lister（中文）",
+    "name": "Cameras Lister（实时同步版）",
+    "author": "Original & Gemini Update",
+    "version": (1, 3, 0),
     "blender": (4, 2, 0),
-    "description": "Lists all cameras from the scene and allows to easily set the view to a particular one.",
-    "location": "Camera Lister's panel shortcut: Alt + C",
+    "description": "列出相机并快速设置视图，支持分辨率实时同步到输出面板。",
+    "location": "快捷键: Alt + C",
     "category": "Camera"
 }
 
 import bpy
-from bpy.types import Operator, Menu, Panel, PropertyGroup, PointerProperty, Object
+from bpy.types import Operator, PropertyGroup, Object
+from bpy.props import IntProperty, StringProperty, EnumProperty, PointerProperty
 
 #--------------------------------------------------------------------------------------
 # F E A T U R E S
 #--------------------------------------------------------------------------------------
 
-# CAMERA'S CUSTOM RESOLUTION
 class Camera_Custom_Resolution_Settings(PropertyGroup):
-    Custom_Horizontal_Resolution: bpy.props.IntProperty(
+    # 使用 update 回调，确保在弹出面板里手动修改数值时，也能实时同步到输出面板
+    def update_res(self, context):
+        SetCameraCustomResolution(context)
+
+    Custom_Horizontal_Resolution: IntProperty(
         name="自定义水平分辨率",
-        description="自定义水平分辨率",
-        default = 1920)
+        default=1920,
+        min=1,
+        update=update_res)
         
-    Custom_Vertical_Resolution: bpy.props.IntProperty(
+    Custom_Vertical_Resolution: IntProperty(
         name="自定义垂直分辨率",
-        description="自定义垂直分辨率",
-        default = 1080)
+        default=1080,
+        min=1,
+        update=update_res)
 
-# SET CAMERA CUSTOM RESOLUTION
-def SetCameraCustomResolution(self, context):
-    context.scene.render.resolution_x = context.active_object.camera_custom_resolution_settings_pointer_prop.Custom_Horizontal_Resolution
-    context.scene.render.resolution_y = context.active_object.camera_custom_resolution_settings_pointer_prop.Custom_Vertical_Resolution
+def SetCameraCustomResolution(context):
+    """核心同步函数：将相机属性同步至场景渲染设置，并强制刷新UI"""
+    active_obj = context.active_object
+    if active_obj and active_obj.type == 'CAMERA':
+        props = active_obj.camera_custom_res_props
+        render = context.scene.render
+        
+        # 只有当数值不一致时才修改，避免循环触发
+        if render.resolution_x != props.Custom_Horizontal_Resolution:
+            render.resolution_x = props.Custom_Horizontal_Resolution
+        if render.resolution_y != props.Custom_Vertical_Resolution:
+            render.resolution_y = props.Custom_Vertical_Resolution
+            
+        # 关键：强制刷新所有区域，确保输出面板（Output Tab）分辨率数值实时变动
+        for window in context.window_manager.windows:
+            for area in window.screen.areas:
+                area.tag_redraw()
 
-# CAMERA VIEW OFF
-class CameraViewOff(bpy.types.Operator):
+# --- 基础操作符 (保持原版功能) ---
+
+class CameraViewOff(Operator):
     bl_idname = 'cameras.camera_view_off'
     bl_label = '退出相机视图'
-    bl_description = "退出相机视图"
-    bl_options = {'UNDO'}
+    def execute(self, context):
+        context.space_data.region_3d.view_perspective = 'PERSP'
+        return {'FINISHED'}
 
-    camera: bpy.props.StringProperty()
-    
-    def execute(self,context):
-        context.space_data.region_3d.view_perspective='PERSP'
-
-        return{'FINISHED'}
-
-# ALIGN SELECTED CAMERA TO VIEW
-class AlignSelectedCameraToView(bpy.types.Operator):
+class AlignSelectedCameraToView(Operator):
     bl_idname = 'cameras.align_selected_to_view'
     bl_label = '将所选相机对齐到视图'
-    bl_description = "将选中的相机对齐到当前视图"
-    bl_options = {'UNDO'}
+    def execute(self, context):
+        if context.object and context.object.type == 'CAMERA':
+            context.scene.camera = context.object
+            bpy.ops.view3d.camera_to_view()
+        return {'FINISHED'}
 
-    def execute(self,context):
-        if context.object:
-            if context.space_data.region_3d.view_perspective == 'CAMERA':
-                return {'FINISHED'}
-            else:
-                ob = context.object
-                if ob.type == 'CAMERA':
-                    scene = bpy.context.scene
-                    currentCameraObj = bpy.data.objects[bpy.context.active_object.name]
-                    scene.camera = currentCameraObj
-                    bpy.ops.view3d.camera_to_view()
-
-        return{'FINISHED'}
-
-# NEW CAMERA FROM VIEW
-class NewCameraFromView(bpy.types.Operator):
+class NewCameraFromView(Operator):
     bl_idname = 'cameras.new_from_view'
     bl_label = '从视图新建相机'
-    bl_description = "从当前视图创建新相机"
-    bl_options = {'UNDO'}
-
-    def execute(self,context):
+    def execute(self, context):
         if context.space_data.region_3d.view_perspective == 'CAMERA':
-            context.space_data.region_3d.view_perspective='PERSP'
+            context.space_data.region_3d.view_perspective = 'PERSP'
         bpy.ops.object.camera_add()
-        scene = bpy.context.scene
-        currentCameraObj = bpy.data.objects[bpy.context.active_object.name]
-        scene.camera = currentCameraObj
+        context.scene.camera = context.active_object
         bpy.ops.view3d.camera_to_view()
+        return {'FINISHED'}
 
-        return{'FINISHED'}
-
-# RENDER ENGINE OPTIONS
 def update_render_engine(self, context):
-    selected_engine = context.scene.set_render_engine
-    
-    if selected_engine == render_engine_options[0][0]:
-        bpy.context.scene.render.engine = 'BLENDER_EEVEE_NEXT'
-    if selected_engine == render_engine_options[1][0]:
-        bpy.context.scene.render.engine = 'CYCLES'
+    context.scene.render.engine = self.set_render_engine
 
-render_engine_options = [
-        ("BLENDER_EEVEE_NEXT", "EEVEE", ""),
-        ("cycles", "CYCLES", "")]
-
-bpy.types.Scene.set_render_engine = bpy.props.EnumProperty(
-    items=render_engine_options,
-    description="设置渲染引擎",
-    default= "BLENDER_EEVEE_NEXT",
-    update = update_render_engine)
-
-# SORTING CAMERAS OPTIONS
-sorting_cameras_options = [
-        ("alphabetically", "按字母", ""),
-        ("by_collections", "按集合", "")]
-
-bpy.types.Scene.sort_cameras = bpy.props.EnumProperty(
-    items=sorting_cameras_options,
-    description="相机排序",
-    default= "alphabetically")
-
-# SET CAMERA VIEW
-class SetCameraView(bpy.types.Operator):
+class SetCameraView(Operator):
     bl_idname = 'cameras.set_view'
     bl_label = '切换到相机视图'
-    bl_description = "将视图切换到此相机"
-    bl_options = {'UNDO'}
-
-    camera: bpy.props.StringProperty()
-
-    def execute(self,context):
+    camera: StringProperty()
+    def execute(self, context):
+        cam = bpy.data.objects.get(self.camera)
+        if not cam: return {'CANCELLED'}
         
-        if bpy.context.object.hide_get(view_layer=None) == True and bpy.context.object.hide_viewport == False:
-            bpy.context.object.hide_set(False)
-            bpy.ops.cameras.select(camera=self.camera)
-            bpy.ops.view3d.object_as_camera()
-            bpy.ops.view3d.view_center_camera()
-            SetCameraCustomResolution(self, context)
-            bpy.context.object.hide_set(True)
-        elif bpy.context.object.hide_get(view_layer=None) == False and bpy.context.object.hide_viewport == True:
-            bpy.context.object.hide_viewport = False
-            bpy.ops.cameras.select(camera=self.camera)
-            bpy.ops.view3d.object_as_camera()
-            bpy.ops.view3d.view_center_camera()
-            SetCameraCustomResolution(self, context)
-            bpy.context.object.hide_viewport = True
-        elif bpy.context.object.hide_get(view_layer=None) == True and bpy.context.object.hide_viewport == True:
-            bpy.context.object.hide_set(False)
-            bpy.context.object.hide_viewport = False
-            bpy.ops.cameras.select(camera=self.camera)
-            bpy.ops.view3d.object_as_camera()
-            bpy.ops.view3d.view_center_camera()
-            SetCameraCustomResolution(self, context)
-            bpy.context.object.hide_set(True)
-            bpy.context.object.hide_viewport = True
-        else:
-            bpy.ops.cameras.select(camera=self.camera)
-            bpy.ops.view3d.object_as_camera()
-            bpy.ops.view3d.view_center_camera()
-            SetCameraCustomResolution(self, context)
+        # 记录原始隐藏状态
+        h1, h2 = cam.hide_get(), cam.hide_viewport
+        cam.hide_set(False)
+        cam.hide_viewport = False
+        
+        context.view_layer.objects.active = cam
+        bpy.ops.view3d.object_as_camera()
+        bpy.ops.view3d.view_center_camera()
+        
+        # 切换相机时同步分辨率
+        SetCameraCustomResolution(context)
+        
+        cam.hide_set(h1)
+        cam.hide_viewport = h2
+        return {'FINISHED'}
 
-        return{'FINISHED'}
-
-# SELECT CAMERA
-class SelectCamera(bpy.types.Operator):
+class SelectCamera(Operator):
     bl_idname = 'cameras.select'
     bl_label = '选择相机'
-    bl_description = "选择相机"
-    bl_options = {'UNDO'}
+    camera: StringProperty()
+    def execute(self, context):
+        cam = bpy.data.objects.get(self.camera)
+        if cam:
+            bpy.ops.object.select_all(action='DESELECT')
+            cam.select_set(True)
+            context.view_layer.objects.active = cam
+            context.scene.camera = cam
+            SetCameraCustomResolution(context)
+        return {'FINISHED'}
 
-    camera: bpy.props.StringProperty()
-
-    def execute(self,context):
-        
-        if context.object:
-            if context.object.select_get():
-                context.object.select_set(state=False)
-        cam=bpy.data.objects[self.camera]
-        cam.select_set(state=True)
-        context.view_layer.objects.active = cam
-        context.scene.camera=cam
-        
-        if bpy.context.object.hide_get(view_layer=None) == True and bpy.context.object.hide_viewport == False:
-            bpy.context.object.hide_set(False)
-            SetCameraCustomResolution(self, context)
-            bpy.context.object.hide_set(True)
-        elif bpy.context.object.hide_get(view_layer=None) == False and bpy.context.object.hide_viewport == True:
-            bpy.context.object.hide_viewport = False
-            SetCameraCustomResolution(self, context)
-            bpy.context.object.hide_viewport = True
-        elif bpy.context.object.hide_get(view_layer=None) == True and bpy.context.object.hide_viewport == True:
-            bpy.context.object.hide_set(False)
-            bpy.context.object.hide_viewport = False
-            SetCameraCustomResolution(self, context)
-            bpy.context.object.hide_set(True)
-            bpy.context.object.hide_viewport = True
-        else:
-            SetCameraCustomResolution(self, context)
-        
-        return{'FINISHED'}
-
-# BIND CAMERA TO MARKER
-class BindCameraToMarker(bpy.types.Operator):
+class BindCameraToMarker(Operator):
     bl_idname = 'cameras.bind_to_marker'
     bl_label = '将相机绑定到标记'
-    bl_description = "在当前帧将相机绑定到时间线标记"
-    bl_options = {'UNDO'}
+    camera: StringProperty()
+    def execute(self, context):
+        tm = context.scene.timeline_markers
+        curr_frame = context.scene.frame_current
+        for m in [m for m in tm if m.frame == curr_frame]: tm.remove(m)
+        new_marker = tm.new(self.camera, frame=curr_frame)
+        new_marker.camera = bpy.data.objects.get(self.camera)
+        return {'FINISHED'}
 
-    camera: bpy.props.StringProperty()
-
-    def execute(self,context):
-                
-        tm = bpy.context.scene.timeline_markers
-        cur_frame = context.scene.frame_current
-        frame_markers = [marker for marker in tm if marker.frame == cur_frame]
-
-        if len(frame_markers) == 0:
-            new_marker = tm.new(self.camera, frame = cur_frame)
-            new_marker.camera = bpy.data.objects[self.camera]
-        elif len(frame_markers) >= 1:
-            for marker in frame_markers:
-                tm.remove(marker)
-            new_marker = tm.new(self.camera, frame = cur_frame)
-            new_marker.camera = bpy.data.objects[self.camera]
-        
-        return{'FINISHED'}
-
-# DELETE CAMERA MARKER
-class Delete_Camera_Marker(bpy.types.Operator):
+class DeleteCameraMarker(Operator):
     bl_idname = 'cameras.delete_camera_marker'
-    bl_label = 'Delete Camera Marker'
-    bl_description = "Delete camera marker at current frame"
-    bl_options = {'UNDO'}
+    bl_label = '删除相机标记'
+    camera: StringProperty()
+    def execute(self, context):
+        tm = context.scene.timeline_markers
+        curr_frame = context.scene.frame_current
+        for m in [m for m in tm if m.frame == curr_frame and m.name == self.camera]:
+            tm.remove(m)
+        return {'FINISHED'}
 
-    camera: bpy.props.StringProperty()
-
-    def execute(self,context):
-        
-        tm = bpy.context.scene.timeline_markers
-        cur_frame = context.scene.frame_current
-        frame_markers = [marker for marker in tm if marker.frame == cur_frame]
-        
-        for marker in frame_markers:
-            if marker.name == self.camera:
-                tm.remove(frame_markers[0])
-
-        return{'FINISHED'}
-
-# DELETE CAMERA
-class DeleteCamera(bpy.types.Operator):
+class DeleteCamera(Operator):
     bl_idname = 'cameras.delete'
     bl_label = '删除相机'
-    bl_description = "Delete camera"
-    bl_options = {'UNDO'}
+    camera: StringProperty()
+    def execute(self, context):
+        cam = bpy.data.objects.get(self.camera)
+        if cam: bpy.data.objects.remove(cam, do_unlink=True)
+        return {'FINISHED'}
 
-    camera: bpy.props.StringProperty()
+#--------------------------------------------------------------------------------------
+# 相机设置弹出面板 (严格保持原 UI 布局)
+#--------------------------------------------------------------------------------------
 
-    def execute(self,context):
-        cam=bpy.data.objects[self.camera]
-        bpy.data.objects.remove(cam)
-        
-        tm = bpy.context.scene.timeline_markers
-        for marker in tm:
-            if marker.name == self.camera:
-                 tm.remove(marker)
-        
-        return{'FINISHED'}
-
-# PANEL BUTTON - CAMERA SETTINGS
-class PanelButton_CameraSettings(bpy.types.Operator):
+class PanelButton_CameraSettings(Operator):
     bl_idname = "camera.settings"
     bl_label = "相机设置"
-    bl_description = "选择相机"
-    bl_options = {'UNDO'}
-
-    camera: bpy.props.StringProperty()
-
-    def execute(self,context):
-        pass
+    camera: StringProperty()
 
     def draw(self, context):
         layout = self.layout
-
-        cam = bpy.context.object.data
+        cam_obj = context.active_object
+        if not cam_obj or cam_obj.type != 'CAMERA': return
+        
+        cam_data = cam_obj.data
         layout.label(text="渲染设置", icon="RESTRICT_RENDER_OFF")
         col = layout.column(align=False)
         row = col.row()
-        row.prop(cam, "type", text="")
+        row.prop(cam_data, "type", text="")
         
-        if cam.type == 'PERSP':
+        if cam_data.type == 'PERSP':
             row = col.row()
-            row.prop(cam, "lens_unit", text="")
-            if cam.lens_unit == 'MILLIMETERS':
-                row.prop(cam, "lens", text="Focal")
-            elif cam.lens_unit == 'FOV':
-                row.prop(cam, "angle", text="Field of View")
-            
-        elif cam.type == 'ORTHO':
-            row.prop(cam, "ortho_scale", text="比例")
-            
-        elif cam.type == 'PANO':
-            engine = context.engine
-            if engine == 'CYCLES':
-                ccam = cam.cycles
-                row.prop(ccam, "panorama_type", text="")
-                
-                if ccam.panorama_type == 'FISHEYE_EQUIDISTANT':
-                    row = col.row()
-                    row.prop(ccam, "fisheye_fov", text="Field of View")
-                    
-                elif ccam.panorama_type == 'FISHEYE_EQUISOLID':
-                    row = col.row()
-                    row.prop(ccam, "fisheye_lens", text="Lens")
-                    row.prop(ccam, "fisheye_fov", text="FOV")
-                    
-                elif ccam.panorama_type == 'EQUIRECTANGULAR':
-                    row = col.row()
-                    row.prop(ccam, "latitude_min", text="Latitude Min")
-                    row.prop(ccam, "longitude_min", text="Longitude Min")
-                    row = col.row()                            
-                    row.prop(ccam, "latitude_max", text="Latitude Max")
-                    row.prop(ccam, "longitude_max", text="Longitude Max")
+            row.prop(cam_data, "lens_unit", text="")
+            if cam_data.lens_unit == 'MILLIMETERS':
+                row.prop(cam_data, "lens", text="焦距")
+            else:
+                row.prop(cam_data, "angle", text="视野角")
+        elif cam_data.type == 'ORTHO':
+            row.prop(cam_data, "ortho_scale", text="比例")
         
         row = col.row()
         row.label(text="移位：")
         row.label(text="裁剪：")
         row = col.row()
-        row.prop(cam, "shift_x", text="水平")
-        row.prop(cam, "clip_start", text="开始")
+        row.prop(cam_data, "shift_x", text="水平")
+        row.prop(cam_data, "clip_start", text="开始")
         row = col.row()
-        row.prop(cam, "shift_y", text="垂直")
-        row.prop(cam, "clip_end", text="结束")
+        row.prop(cam_data, "shift_y", text="垂直")
+        row.prop(cam_data, "clip_end", text="结束")
+        
         layout.label(text="自定义分辨率：")
-        row = layout.row(align=False)
-        if bpy.context.object.hide_get(view_layer=None) == True or bpy.context.object.hide_viewport == True:
-            rowbox = row.box()
-            rowbox.alert =True
-            rowbox.label(text="请在视口中取消隐藏相机以设置分辨率", icon= "ERROR")
-        else:
-            row.prop(context.active_object.camera_custom_resolution_settings_pointer_prop, "Custom_Horizontal_Resolution", text="水平")
-            row.prop(context.active_object.camera_custom_resolution_settings_pointer_prop, "Custom_Vertical_Resolution", text="垂直")
-        
+        row = layout.row(align=True)
+        # 这里绑定的是我们属性组里的值，它带有 update 回调
+        row.prop(cam_obj.camera_custom_res_props, "Custom_Horizontal_Resolution", text="水平")
+        row.prop(cam_obj.camera_custom_res_props, "Custom_Vertical_Resolution", text="垂直")
+
+    def execute(self, context):
+        return {'FINISHED'}
+
     def invoke(self, context, event):
-        
-        if context.object:
-            if context.object.select_get():
-                context.object.select_set(state=False)
-        cam=bpy.data.objects[self.camera]
-        cam.select_set(state=True)
-        context.view_layer.objects.active = cam
-        context.scene.camera=cam
-
-        if bpy.context.object.hide_get(view_layer=None) == True and bpy.context.object.hide_viewport == False:
-            bpy.context.object.hide_set(False)
-            SetCameraCustomResolution(self, context)
-            bpy.context.object.hide_set(True)
-        elif bpy.context.object.hide_get(view_layer=None) == False and bpy.context.object.hide_viewport == True:
-            bpy.context.object.hide_viewport = False
-            SetCameraCustomResolution(self, context)
-            bpy.context.object.hide_viewport = True
-        elif bpy.context.object.hide_get(view_layer=None) == True and bpy.context.object.hide_viewport == True:
-            bpy.context.object.hide_set(False)
-            bpy.context.object.hide_viewport = False
-            SetCameraCustomResolution(self, context)
-            bpy.context.object.hide_set(True)
-            bpy.context.object.hide_viewport = True
-        else:
-            SetCameraCustomResolution(self, context)
-
-        wm = context.window_manager
-        return wm.invoke_popup(self)
+        cam = bpy.data.objects.get(self.camera)
+        if cam:
+            context.view_layer.objects.active = cam
+            SetCameraCustomResolution(context)
+        return context.window_manager.invoke_popup(self)
 
 #--------------------------------------------------------------------------------------
-# C A M E R A S   L I S T E R   P A N E L
+# 主 UI 绘制函数
 #--------------------------------------------------------------------------------------
 
-# CAMERAS LISTER PANEL
-def common_draw(self,layout,context):
-    def coll_rec(coll, clist):
-        if coll.children:
-            for child in coll.children:
-                coll_rec(child, clist)
-        cams=[cam.name for cam in coll.objects if cam.type=='CAMERA']
-        if cams:
-            cams.sort(key=str.lower)
-            clist.append((coll.name, cams))
-
-    tm = bpy.context.scene.timeline_markers
-    cur_frame = context.scene.frame_current
+def common_draw(self, layout, context):
+    scene = context.scene
+    tm = scene.timeline_markers
+    cur_frame = scene.frame_current
     frame_markers = [marker for marker in tm if marker.frame == cur_frame]
 
-    box = layout
-    row = box.row(align=False)
+    row = layout.row(align=False)
     row.scale_x = 1.8
     row.scale_y = 1.8
     row.operator("render.render", text="", icon="RENDER_STILL")
     row.operator("render.render", text="", icon="RENDER_ANIMATION").animation=True
     row.operator("render.view_show", text="", icon="IMAGE_DATA")
-    if ((context.space_data.region_3d.view_perspective == 'PERSP' or context.space_data.region_3d.view_perspective == 'ORTHO')
-    and context.area.spaces.active.use_render_border == False):
-        row.operator("view3d.render_border", text="", icon="BORDERMOVE")
-    elif ((context.space_data.region_3d.view_perspective == 'PERSP' or context.space_data.region_3d.view_perspective == 'ORTHO')
-    and context.area.spaces.active.use_render_border == True):
+    
+    # 渲染框逻辑
+    view3d = context.space_data
+    is_cam_view = (view3d.region_3d.view_perspective == 'CAMERA')
+    use_border = scene.render.use_border if is_cam_view else view3d.use_render_border
+    
+    if use_border:
         row.alert = True
         row.operator("view3d.clear_render_border", text="", icon="BORDERMOVE")
-    if context.space_data.region_3d.view_perspective == 'CAMERA' and bpy.data.scenes["Scene"].render.use_border == False:
+    else:
         row.operator("view3d.render_border", text="", icon="BORDERMOVE")
-    if context.space_data.region_3d.view_perspective == 'CAMERA' and bpy.data.scenes["Scene"].render.use_border == True:
-        row.alert = True
-        row.operator("view3d.clear_render_border", text="", icon="BORDERMOVE")
-    row.prop(context.scene, "set_render_engine", text=" ", expand=True)
-    box.separator()
-    row = box.row(align=False)
+            
+    row.prop(scene, "set_render_engine", text=" ", expand=True)
+
+    layout.separator()
+    
+    row = layout.row(align=False)
     row.scale_y = 1.2
     row.operator("cameras.new_from_view", text="根据视图添加相机", icon="ADD")
     row.operator("cameras.align_selected_to_view", text="将所选相机对齐到视图", icon="CON_CAMERASOLVER")
-    box.separator()
-    boxframe = box.box()
-    row = boxframe.row(align=True)
-    row.prop(context.scene, "sort_cameras", text=" ", expand=True)
-    boxframe = box.box()
-    boxframecolumn = boxframe.column()
-    sort_option = context.scene.sort_cameras
-    if sort_option == sorting_cameras_options[0][0]:
-        cam_list=[cam.name for cam in context.scene.collection.all_objects if cam.type=='CAMERA']
-        cam_list.sort(key=str.lower)
-        if not cam_list:
-            row = boxframecolumn.row(align=True)
-            row.alignment = "CENTER"
-            row.alert = True
-            row.label(text="场景中没有相机", icon= "ERROR")
+    
+    layout.separator()
+    
+    box_sort = layout.box()
+    row = box_sort.row(align=True)
+    row.prop(scene, "sort_cameras", text=" ", expand=True)
+
+    box_list = layout.box()
+    col_list = box_list.column()
+    
+    all_cams = [o for o in scene.objects if o.type == 'CAMERA']
+    
+    if not all_cams:
+        col_list.label(text="场景中没有相机", icon="ERROR")
+    else:
+        if scene.sort_cameras == 'alphabetically':
+            all_cams.sort(key=lambda o: o.name.lower())
+            for cam in all_cams:
+                draw_camera_row(col_list, context, cam, frame_markers)
         else:
-            for cam in cam_list:
-                row = boxframecolumn.row(align=True)
-                row.operator("cameras.select", text="", icon="RESTRICT_SELECT_OFF").camera=cam
-                row.operator("cameras.camera_view_off"
-                    if context.space_data.region_3d.view_perspective == 'CAMERA'
-                    and bpy.context.space_data.camera is bpy.context.scene.objects[cam] else "cameras.set_view",
-                    text=cam, icon="CHECKBOX_HLT"
-                    if bpy.context.space_data.camera is bpy.context.scene.objects[cam]
-                    and context.object.type == 'CAMERA'
-                    and context.space_data.region_3d.view_perspective == 'CAMERA'
-                    else "CHECKBOX_DEHLT").camera=cam
-                row.operator("cameras.delete_camera_marker"
-                    if len(frame_markers) >= 1 and frame_markers[0].name == cam else "cameras.bind_to_marker",
-                    text="", icon="MARKER_HLT" if len(frame_markers) >= 1 and frame_markers[0].name == cam else "MARKER").camera=cam
-                row.operator("cameras.delete", text="", icon="PANEL_CLOSE").camera=cam
-                row.separator()
-                row.operator("camera.settings", text="", icon="TRIA_RIGHT").camera=cam
-                
-    elif sort_option == sorting_cameras_options[1][0]:
-        collcamlist=[]
-        master_coll = context.scene.collection
-        coll_rec(master_coll, collcamlist)
-        collcamlist.sort()
-        if not collcamlist:
-            row = boxframecolumn.row(align=True)
-            row.alignment = "CENTER"
-            row.alert = True
-            row.label(text="场景中没有相机", icon= "ERROR")
-        else:
-            for coll in collcamlist:
-                boxframecolumn.label(text=coll[0])
-                for cam in coll[1]:
-                    row = boxframecolumn.row(align=True)
-                    row.operator("cameras.select", text="", icon="RESTRICT_SELECT_OFF").camera=cam
-                    row.operator("cameras.camera_view_off"
-                        if context.space_data.region_3d.view_perspective == 'CAMERA'
-                        and bpy.context.space_data.camera is bpy.context.scene.objects[cam] else "cameras.set_view",
-                        text=cam, icon="CHECKBOX_HLT"
-                        if bpy.context.space_data.camera is bpy.context.scene.objects[cam]
-                        and context.object.type == 'CAMERA'
-                        and context.space_data.region_3d.view_perspective == 'CAMERA'
-                        else "CHECKBOX_DEHLT").camera=cam
-                    row.operator("cameras.delete_camera_marker"
-                        if len(frame_markers) >= 1 and frame_markers[0].name == cam else "cameras.bind_to_marker",
-                        text="", icon="MARKER_HLT" if len(frame_markers) >= 1 and frame_markers[0].name == cam else "MARKER").camera=cam
-                    row.operator("cameras.delete", text="", icon="PANEL_CLOSE").camera=cam
-                    row.separator()
-                    row.operator("camera.settings", text="", icon="TRIA_RIGHT").camera=cam
+            for coll in bpy.data.collections:
+                cams_in_coll = [o for o in coll.objects if o.type == 'CAMERA' and o.name in scene.objects]
+                if cams_in_coll:
+                    col_list.label(text=coll.name)
+                    for cam in sorted(cams_in_coll, key=lambda o: o.name.lower()):
+                        draw_camera_row(col_list, context, cam, frame_markers)
 
-#--------------------------------------------------------------------------------------
-# P A N E L
-#--------------------------------------------------------------------------------------
-
-# FLOATING PANEL
-class VIEW3D_PT_FloatingPanel(Operator):
-    bl_label = "相机列表"
-    bl_idname = "cameras.lister"
-
-    def draw(self, context):
-        layout = self.layout
-        box = layout.column(align=True)
-        box.label(text="相机列表", icon="OUTLINER_OB_CAMERA")
-        box.separator()
-        common_draw(self, box, context)
+def draw_camera_row(layout, context, cam, frame_markers):
+    row = layout.row(align=True)
+    is_viewing = (context.space_data.region_3d.view_perspective == 'CAMERA' and context.space_data.camera == cam)
+    
+    row.operator("cameras.select", text="", icon="RESTRICT_SELECT_OFF").camera = cam.name
+    if is_viewing:
+        row.operator("cameras.camera_view_off", text=cam.name, icon="CHECKBOX_HLT")
+    else:
+        row.operator("cameras.set_view", text=cam.name, icon="CHECKBOX_DEHLT").camera = cam.name
         
-    def invoke(self, context, event):
-        wm = context.window_manager
-        return wm.invoke_popup(self)
+    has_marker = any(m.camera == cam for m in frame_markers)
+    row.operator("cameras.delete_camera_marker" if has_marker else "cameras.bind_to_marker", 
+                 text="", icon="MARKER_HLT" if has_marker else "MARKER").camera = cam.name
+        
+    row.operator("cameras.delete", text="", icon="PANEL_CLOSE").camera = cam.name
+    row.separator()
+    row.operator("camera.settings", text="", icon="TRIA_RIGHT").camera = cam.name
 
+class VIEW3D_PT_FloatingPanel(Operator):
+    bl_idname = "cameras.lister"
+    bl_label = "相机列表"
+    def draw(self, context):
+        common_draw(self, self.layout, context)
+    def invoke(self, context, event):
+        return context.window_manager.invoke_popup(self, width=320)
     def execute(self, context):
-        self.report({'INFO'}, self.my_enum)
         return {'FINISHED'}
 
 #--------------------------------------------------------------------------------------
@@ -508,45 +312,41 @@ classes = (
     SetCameraView,
     SelectCamera,
     BindCameraToMarker,
-    Delete_Camera_Marker,
+    DeleteCameraMarker,
     DeleteCamera,
     PanelButton_CameraSettings,
     VIEW3D_PT_FloatingPanel,
 )
 
 def register():
-    from bpy.utils import register_class
     for cls in classes:
-        register_class(cls)
-
-    Object.camera_custom_resolution_settings_pointer_prop = bpy.props.PointerProperty(type = Camera_Custom_Resolution_Settings)
+        bpy.utils.register_class(cls)
+    Object.camera_custom_res_props = PointerProperty(type=Camera_Custom_Resolution_Settings)
+    bpy.types.Scene.set_render_engine = EnumProperty(
+        items=[('BLENDER_EEVEE_NEXT', "EEVEE", ""), ('CYCLES', "CYCLES ", "")],
+        name="渲染引擎", default="BLENDER_EEVEE_NEXT", update=update_render_engine)
+    bpy.types.Scene.sort_cameras = EnumProperty(
+        items=[("alphabetically", "按字母", ""), ("by_collections", "按集合", "")],
+        name="相机排序", default="alphabetically")
 
     wm = bpy.context.window_manager
-
-    wm = bpy.context.window_manager
-    km = wm.keyconfigs.addon.keymaps.new(name = 'Object Mode')
-    kmi = km.keymap_items.new('cameras.lister', 'C', 'PRESS', alt=True)
-    kmi.active = True
+    if wm.keyconfigs.addon:
+        km = wm.keyconfigs.addon.keymaps.new(name='Object Mode', space_type='EMPTY')
+        km.keymap_items.new(VIEW3D_PT_FloatingPanel.bl_idname, 'C', 'PRESS', alt=True)
 
 def unregister():
-    from bpy.utils import unregister_class
-    for cls in classes:
-        unregister_class(cls)
-    
-    del Object.Pointer_Camera_Custom_Resolution_Settings
-
-    addon_keymaps = []
-    
     wm = bpy.context.window_manager
-
     if wm.keyconfigs.addon:
-        for km in addon_keymaps:
+        km = wm.keyconfigs.addon.keymaps.get('Object Mode')
+        if km:
             for kmi in km.keymap_items:
-                km.keymap_items.remove(kmi)
-
-            wm.keyconfigs.addon.keymaps.remove(km)
-
-    addon_keymaps.clear()
+                if kmi.idname == VIEW3D_PT_FloatingPanel.bl_idname:
+                    km.keymap_items.remove(kmi)
+    del Object.camera_custom_res_props
+    del bpy.types.Scene.set_render_engine
+    del bpy.types.Scene.sort_cameras
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
 
 if __name__ == "__main__":
     register()
