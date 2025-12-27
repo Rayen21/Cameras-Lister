@@ -1,3 +1,7 @@
+根据blender4.5中一些规范进行了代码的更新
+
+<img width="626" height="345" alt="image" src="https://github.com/user-attachments/assets/76ad8b90-b911-42f8-bb0c-1d6c53271f74" />
+
 这是一个blener中的相机列表插件（进行了简单的标题汉化，以及修改了对4.2系统中的渲染器切换的代码修改）
 
 基本功能：
