@@ -1,9 +1,8 @@
 bl_info = {
-    "name": "Cameras Lister（实时同步版）",
+    "name": "Cameras Lister（全版本兼容版）",
     "author": "Original & Gemini Update",
-    "version": (1, 3, 0),
-    "blender": (4, 2, 0),
-    "description": "列出相机并快速设置视图，支持分辨率实时同步到输出面板。",
+    "version": (1, 0, 0),
+    "description": "列出相机并快速设置视图，支持分辨率实时同步。兼容 Blender 3.x/4.x/5.x。",
     "location": "快捷键: Alt + C",
     "category": "Camera"
 }
@@ -12,26 +11,32 @@ import bpy
 from bpy.types import Operator, PropertyGroup, Object
 from bpy.props import IntProperty, StringProperty, EnumProperty, PointerProperty
 
+# --- 核心：自动识别当前 Blender 支持的 EEVEE 名称 ---
+def get_eevee_engine_id():
+    """根据 Blender 版本返回正确的 EEVEE 标识符"""
+    ver = bpy.app.version # 返回类似 (5, 0, 1) 的元组
+    
+    # 如果版本号大于等于 4.2 且 小于 5.0 (或者根据你 5.0.1 的反馈测试)
+    # 逻辑：4.2 引入了 NEXT，如果 5.0.1 识别不了 NEXT，说明它已经改回去了
+    if ver >= (4, 2, 0) and ver < (5, 0, 0):
+        return 'BLENDER_EEVEE_NEXT'
+    
+    # 其他版本（3.x 或 5.0+）通常使用 BLENDER_EEVEE
+    return 'BLENDER_EEVEE'
+
 #--------------------------------------------------------------------------------------
 # F E A T U R E S
 #--------------------------------------------------------------------------------------
 
 class Camera_Custom_Resolution_Settings(PropertyGroup):
-    # 使用 update 回调，确保在弹出面板里手动修改数值时，也能实时同步到输出面板
     def update_res(self, context):
         SetCameraCustomResolution(context)
 
     Custom_Horizontal_Resolution: IntProperty(
-        name="自定义水平分辨率",
-        default=1920,
-        min=1,
-        update=update_res)
+        name="自定义水平分辨率", default=1920, min=1, update=update_res)
         
     Custom_Vertical_Resolution: IntProperty(
-        name="自定义垂直分辨率",
-        default=1080,
-        min=1,
-        update=update_res)
+        name="自定义垂直分辨率", default=1080, min=1, update=update_res)
 
 def SetCameraCustomResolution(context):
     """核心同步函数：将相机属性同步至场景渲染设置，并强制刷新UI"""
@@ -39,19 +44,17 @@ def SetCameraCustomResolution(context):
     if active_obj and active_obj.type == 'CAMERA':
         props = active_obj.camera_custom_res_props
         render = context.scene.render
-        
         # 只有当数值不一致时才修改，避免循环触发
         if render.resolution_x != props.Custom_Horizontal_Resolution:
             render.resolution_x = props.Custom_Horizontal_Resolution
         if render.resolution_y != props.Custom_Vertical_Resolution:
             render.resolution_y = props.Custom_Vertical_Resolution
-            
         # 关键：强制刷新所有区域，确保输出面板（Output Tab）分辨率数值实时变动
         for window in context.window_manager.windows:
             for area in window.screen.areas:
                 area.tag_redraw()
 
-# --- 基础操作符 (保持原版功能) ---
+# --- 基础操作符 ---
 
 class CameraViewOff(Operator):
     bl_idname = 'cameras.camera_view_off'
@@ -63,25 +66,76 @@ class CameraViewOff(Operator):
 class AlignSelectedCameraToView(Operator):
     bl_idname = 'cameras.align_selected_to_view'
     bl_label = '将所选相机对齐到视图'
+    
+    @classmethod
+    def poll(cls, context):
+        # 只有在 3D 视图区域，并且选中了相机时，按钮才允许点击
+        return context.space_data.type == 'VIEW_3D' and context.object and context.object.type == 'CAMERA'
+
     def execute(self, context):
-        if context.object and context.object.type == 'CAMERA':
-            context.scene.camera = context.object
-            bpy.ops.view3d.camera_to_view()
+        # 1. 确保目标相机是当前场景的活跃相机
+        context.scene.camera = context.object
+        
+        try:
+            # 2. 尝试执行对齐操作
+            # 使用 'INVOKE_DEFAULT' 帮助 Blender 正确识别窗口上下文
+            bpy.ops.view3d.camera_to_view('INVOKE_DEFAULT')
+        except RuntimeError as e:
+            # 3. 如果还是报错（比如已经在相机视图），静默处理，不弹出错误红框
+            self.report({'INFO'}, "已在相机视图或对齐跳过")
+            
         return {'FINISHED'}
 
 class NewCameraFromView(Operator):
     bl_idname = 'cameras.new_from_view'
     bl_label = '从视图新建相机'
+
     def execute(self, context):
+        # 1. 如果当前已经在相机视图，先切换回透视视图，以便正确对齐新相机
         if context.space_data.region_3d.view_perspective == 'CAMERA':
             context.space_data.region_3d.view_perspective = 'PERSP'
-        bpy.ops.object.camera_add()
-        context.scene.camera = context.active_object
+
+        # 2. 创建相机数据和物体
+        cam_data = bpy.data.cameras.new("Camera")
+        cam_obj = bpy.data.objects.new("Camera", cam_data)
+        context.collection.objects.link(cam_obj)
+
+        # 3. 自动编号逻辑
+        base_name = "Camera"
+        existing_names = [o.name for o in bpy.data.objects if o.name.startswith(base_name)]
+        
+        # 检查重名并递增编号 (例如 Camera.001)
+        suffix = 1
+        new_name = base_name
+        while new_name in bpy.data.objects:
+            new_name = f"{base_name}.{suffix:03d}"
+            suffix += 1
+        cam_obj.name = new_name
+
+        # 4. 设置为活动相机并对齐视图
+        context.view_layer.objects.active = cam_obj
+        context.scene.camera = cam_obj
         bpy.ops.view3d.camera_to_view()
+
         return {'FINISHED'}
 
+# 修改后的引擎切换逻辑（兼容3.X-5.X)
 def update_render_engine(self, context):
-    context.scene.render.engine = self.set_render_engine
+    target_engine = self.set_render_engine
+    # 如果用户选的是 EEVEE，动态判断该用哪个 ID
+    if target_engine == 'AUTO_EEVEE':
+        real_id = get_eevee_engine_id()
+        # 尝试切换
+        try:
+            context.scene.render.engine = real_id
+        except:
+            # 万一判断失误，强制回退到通用 ID
+            context.scene.render.engine = 'BLENDER_EEVEE'
+    else:
+        context.scene.render.engine = target_engine
+        #context.scene.render.engine = get_eevee_engine_id()
+    #else:
+        #context.scene.render.engine = target_engine
 
 class SetCameraView(Operator):
     bl_idname = 'cameras.set_view'
@@ -90,19 +144,15 @@ class SetCameraView(Operator):
     def execute(self, context):
         cam = bpy.data.objects.get(self.camera)
         if not cam: return {'CANCELLED'}
-        
         # 记录原始隐藏状态
         h1, h2 = cam.hide_get(), cam.hide_viewport
         cam.hide_set(False)
         cam.hide_viewport = False
-        
         context.view_layer.objects.active = cam
         bpy.ops.view3d.object_as_camera()
         bpy.ops.view3d.view_center_camera()
-        
         # 切换相机时同步分辨率
         SetCameraCustomResolution(context)
-        
         cam.hide_set(h1)
         cam.hide_viewport = h2
         return {'FINISHED'}
@@ -154,7 +204,7 @@ class DeleteCamera(Operator):
         return {'FINISHED'}
 
 #--------------------------------------------------------------------------------------
-# 相机设置弹出面板 (严格保持原 UI 布局)
+# 相机设置弹出面板
 #--------------------------------------------------------------------------------------
 
 class PanelButton_CameraSettings(Operator):
@@ -195,7 +245,6 @@ class PanelButton_CameraSettings(Operator):
         
         layout.label(text="自定义分辨率：")
         row = layout.row(align=True)
-        # 这里绑定的是我们属性组里的值，它带有 update 回调
         row.prop(cam_obj.camera_custom_res_props, "Custom_Horizontal_Resolution", text="水平")
         row.prop(cam_obj.camera_custom_res_props, "Custom_Vertical_Resolution", text="垂直")
 
@@ -210,7 +259,7 @@ class PanelButton_CameraSettings(Operator):
         return context.window_manager.invoke_popup(self)
 
 #--------------------------------------------------------------------------------------
-# 主 UI 绘制函数
+# 主 UI 绘制
 #--------------------------------------------------------------------------------------
 
 def common_draw(self, layout, context):
@@ -225,7 +274,6 @@ def common_draw(self, layout, context):
     row.operator("render.render", text="", icon="RENDER_STILL")
     row.operator("render.render", text="", icon="RENDER_ANIMATION").animation=True
     row.operator("render.view_show", text="", icon="IMAGE_DATA")
-    
     # 渲染框逻辑
     view3d = context.space_data
     is_cam_view = (view3d.region_3d.view_perspective == 'CAMERA')
@@ -322,9 +370,14 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     Object.camera_custom_res_props = PointerProperty(type=Camera_Custom_Resolution_Settings)
+    
+    # 兼容性修改：使用 AUTO_EEVEE 作为内部标识符
     bpy.types.Scene.set_render_engine = EnumProperty(
-        items=[('BLENDER_EEVEE_NEXT', "EEVEE", ""), ('CYCLES', "CYCLES ", "")],
-        name="渲染引擎", default="BLENDER_EEVEE_NEXT", update=update_render_engine)
+        items=[('AUTO_EEVEE', "EEVEE", ""), ('CYCLES', "CYCLES ", "")],
+        name="渲染引擎", 
+        default='AUTO_EEVEE', 
+        update=update_render_engine)
+        
     bpy.types.Scene.sort_cameras = EnumProperty(
         items=[("alphabetically", "按字母", ""), ("by_collections", "按集合", "")],
         name="相机排序", default="alphabetically")
